@@ -1,0 +1,310 @@
+---
+title: "Assignment 8: Agent-Based Models"
+author: "Benjamin Nguyen"
+date: "`r Sys.Date()`"
+documentclass: article
+geometry: margin=1in
+fontsize: 11pt
+output:
+  pdf_document:
+    toc: false
+    df_print: kable
+    fig_caption: false
+    number_sections: false
+    dev: pdf
+    highlight: tango
+  html_document:
+    theme: default
+    self_contained: true
+    toc: false
+    df_print: kable
+    fig_caption: false
+    number_sections: false
+    smart: true
+    dev: svg
+---
+
+```{r setup, include = FALSE}
+# DO NOT ALTER THIS CHUNK
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE,
+  fig.width = 5,
+  fig.asp = 0.618,
+  out.width = "70%",
+  dpi = 120,
+  fig.align = "center",
+  cache = FALSE
+)
+
+# Load required packages
+suppressPackageStartupMessages(library(tidyverse))
+
+run_abm <- function(
+    population_size = 100,
+    initial_infected = 1,
+    time_steps = 50,
+    base_prob_infection = 0.05,
+    time_to_recover = 10,
+    min_interactions = 1,
+    max_interactions = 10,
+    random = FALSE,
+    masking = FALSE,
+    masking_prob = NA,
+    mask_effectiveness = NA,
+    isolation = FALSE,
+    time_to_isolation = 3
+    ){
+      # Initialize population
+      if (random == FALSE) set.seed(123) # For reproducibility
+      population <- tibble(
+        id = 1:population_size,
+        state = rep("S", population_size),
+        days_infected = rep(0, population_size),
+        superspreader = FALSE,
+        masker = FALSE
+      )
+      if(masking==TRUE){
+        population$masker[sample(population$id, round(population_size*masking_prob))] = TRUE
+      }
+
+      initial_infected_ids <- sample(population$id, initial_infected)
+      population <- population %>%
+        mutate(state = if_else(id %in% initial_infected_ids, "I", state))
+      
+      results <- list()
+      pb <- txtProgressBar(min = 0, max = time_steps, initial = 0, style=3)
+      
+      for (t in 1:time_steps) {
+        gc()
+        setTxtProgressBar(pb,t)
+        # Infection process for each susceptible individual
+        population <- population %>%
+          rowwise() %>%
+          mutate(state = if_else(state == "S", {
+            # Randomly select X number of different people, not including self
+            selected_ids <- sample(
+              population$id[-id],
+              sample(min_interactions:max_interactions,1) # This determines how many, can be changed to distribution
+              )
+            
+            interaction_states <- population$state[selected_ids]
+            infected_contacts <- population %>%
+              ungroup() %>%
+              filter(
+                id %in% selected_ids, 
+                state == "I", 
+                (isolation == FALSE & days_infected > 0) | 
+                  (isolation == TRUE & days_infected > time_to_isolation)
+                )
+            
+            p_uninfected <- infected_contacts %>% 
+              group_by(masker) %>% 
+              summarise(n = n()) %>% 
+              mutate(
+                p = if_else(
+                  masker == FALSE,
+                  base_prob_infection,
+                  base_prob_infection * (1 - mask_effectiveness)
+                  ),
+                p_cumulative_no_infection = (1-p)^n
+                ) %>%
+              summarize(
+                p_uninfected = prod(p_cumulative_no_infection)
+              ) %>%
+              pluck(1)
+            p_infected <- 1 - p_uninfected
+            
+            # The chance to be infected is 1 minus the chance of not being infected.
+            # Infection is assumed to be independent with each interaction.
+            if("I" %in% interaction_states &&
+                runif(1) < p_infected) "I" 
+            else "S"},
+            state))
+        
+        # Recovery process.
+        # at this point just more than 10 days = recovery
+        population <- population %>%
+          rowwise() %>%
+          mutate(days_infected = if_else(state == "I", days_infected + 1, days_infected),
+                  state = if_else(state == "I" & days_infected > time_to_recover, "R", state)) %>%
+          ungroup() # Un-group after row-wise operations
+        
+        # Record results for this time step
+        results[[t]] <- population %>% 
+          count(state) %>% 
+          pivot_wider(names_from = state, values_from = n, values_fill = list(n = 0))
+      }
+      close(pb)
+        
+      results <- bind_rows(results) %>%
+        mutate_all(~replace(., is.na(.), 0)) %>%
+        mutate(time = 1:n())
+}
+```
+
+
+## Exercise 1
+
+```{r, results="hide"}
+if (file.exists("results_ex1.rds")) {
+  results_ex1 <- readRDS("results_ex1.rds")
+} else {
+  results_ex1 <- run_abm()
+  saveRDS(results_ex1, "results_ex1.rds")
+}
+```
+
+The columns that hold the susceptible, infectious, and recovered is "I", "S", "R".
+
+
+There are a total of 100 agents in the simulation.
+
+
+The simulation ran through 50 time steps.
+## Exercise 2
+```{r}
+results_sorted <- results_ex1 %>%
+  pivot_longer(cols = c(I,S,R), names_to = "category", values_to = "People")
+```
+```{r}
+results_sorted %>%
+  ggplot()+ geom_line(aes(y = People, x = time, color = category)) +
+  labs(title = "Agent-based simulation of Infected", x = "Time steps")
+```
+For the susceptible agents I see that it started off at the top with 99 then started to drop till 8 at around 26 time steps. The infected showed a 0 at the beginning then slowly climbed up to 54 people proceeding to drop back to 0 after around 10 time steps. As for the discovered agents seeing a consistant increase throughout the simulation. In conclusion infected started to climb faster than the recovered but soon later recovered started to keep climbing while infected declined.
+
+
+
+## Exercise 3
+
+```{r}
+
+plot_sir <- function(.data, title){
+    .data %>%
+  pivot_longer(cols = c(I,S,R), names_to = "category", values_to = "People") %>%
+    ggplot()+ geom_line(aes(y = People, x = time, color = category)) +
+    labs(title = title)
+}
+```
+```{r}
+plot_sir(results_ex1, "Agent_based simulation")
+```
+
+
+
+
+## Exercise 4
+
+```{r, results="hide"}
+
+if (file.exists("results_ex4.rds")) {
+  results_ex4 <- readRDS("results_ex4.rds")
+} else {
+  results_ex1 <- run_abm(base_prob_infection = 0.1)
+  saveRDS(results_ex4, "results_ex4.rds")
+}
+```
+```{r}
+plot_sir(results_ex4, "Agent_based model with lower infection probability to 0.1")
+```
+
+
+
+## Exercise 5
+```{r}
+infected_1 <- data.frame(time = results_ex1$time, infected = results_ex1$I, simulation = "simulation 1 (P = 0.05)")
+
+infected_2 <- data.frame(time = results_ex4$time, infected = results_ex4$I, simulation = "simulation 2 (P = 0.1)")
+
+combined_simulation <- rbind(infected_2,infected_1)
+
+combined_simulation %>%
+  ggplot() + geom_line(mapping = aes(x = time, y = infected, color = simulation))
+```
+
+
+Simulation 2 has a more exponential increase in infected than simulation 2, given that the probability for infection in simulation 2 is 0.1 and simulation 1 is 0.05. Also looking at the simulations, simulation 2 has a more drastic drop in infected agents compared to simulation 1. Simulation 2 hitting a peak at around 80 agents and simulation 1 hitting a peak at around 55.
+
+```{r}
+plot_comparison <- function(df1, df2, title){
+  infected_1 <- data.frame(time = df1$time, infected = df1$I, simulation = "simulation 1")
+  infected_2 <- data.frame(time = df2$time, infected = df2$I, simulation = "simulation 2")
+  
+  combined_infected <- rbind(infected_1, infected_2)
+  
+  combined_infected %>%
+    ggplot()+ geom_line(mapping = aes(x = time, y = infected, color = simulation))+
+    labs(title = title)
+    
+}
+
+```
+```{r}
+plot_comparison(results_ex1, results_ex4, "Higher probability of infection vs. Orginal")
+```
+
+
+## Exercise 6
+
+```{r, results="hide"}
+if (file.exists("results_ex5.rds")) {
+  results_ex5 <- readRDS("results_ex5.rds")
+} else {
+  results_ex5 <- run_abm(min_interactions = 5)
+  saveRDS(results_ex5, "results_ex5.rds")
+}
+```
+```{r}
+plot_sir(results_ex5, "Agent-based simulation minimum interaction 5")
+plot_comparison(results_ex1,results_ex5, "Agent-based simulation orginial vs. minimum interaction 5")
+```
+In this new simulation where the minimum interaction is 5 instead of 1 can be seen in simulation 2. The graph shows that they both show similar growth rates but simulation 2 grows higher in infected agents and reaches a peak at around 75. Following a big drop in decrease reaching 0 at around the same time steps of simulation 1.
+
+## Exercise 7
+```{r,results="hide"}
+if (file.exists("results_ex6.rds")) {
+  results_ex6 <- readRDS("results_ex6.rds")
+} else {
+  results_ex6 <- run_abm(masking = TRUE, masking_prob = 0.5, mask_effectiveness = 0.3)
+  saveRDS(results_ex6, "results_ex6.rds")
+}
+```
+```{r}
+plot_sir(results_ex6, "Simulation with mask")
+plot_comparison(results_ex1,results_ex6,"Original vs. mask")
+```
+
+The simulation with mask seem stop prolong the infected agents and lowered the amount of agents that were infected. Showing that mask show a substantial amount of decrease in decreased amount of infected agents compared to simulation 1. Showing a steadily increase and steadily drop in infected agents.
+
+
+
+## Exercise 8
+
+```{r,results="hide"}
+if (file.exists("results_ex7.rds")) {
+  results_ex7 <- readRDS("results_ex7.rds")
+} else{
+  results_ex7 <- run_abm(isolation = TRUE)
+  saveRDS(results_ex7, "results_ex7.rds")
+}
+```
+```{r}
+plot_sir(results_ex7, "simulation with Isolation")
+plot_comparison(results_ex1,results_ex7, "Isolation vs. Original")
+```
+
+This new agent-based simulation ran with isolation showed a drastic decrease in infected agents. As shown in the graph the new simulation with isolation has a steadily increase in infected agents, compared to the original setting of simulation, showing a big difference in infected agents. 
+
+
+## Exercise 9
+
+
+Throughout the exercises I have seen many ways a outbreak in a disease can be prevented and measures that can be taken to help the spread. The simulations that have shown a big difference is isolation of agents and agents wearing a mask. Through the representations of graphs, the graphs showed how some simple measure can drastically change how fast or slow a disease can spread. 
+
+Some other variables that have affected the spread of diseases that can be incorporated into the model is vaccinations rates. Depending on human behavior vaccination can help prevent the spread of diseases. Actions that I can take to help prevent the spread of diseases is wearing a mask when outside and not leaving the house unless it is a necessity. 
+
+
+Academic Integrity statement
+No AI was used.
+
